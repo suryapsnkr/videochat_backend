@@ -1,24 +1,33 @@
-# yourapp/consumers.py
-from channels.generic.websocket import AsyncWebsocketConsumer
+# consumers.py
 import json
+from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
 
-class CallConsumer(AsyncWebsocketConsumer):
+# In-memory waiting queue (use Redis in production)
+waiting_users = set()
+
+class MatchConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        self.room = self.scope["url_route"]["kwargs"]["room_name"]
-        await self.channel_layer.group_add(self.room, self.channel_name)
+        self.user_id = self.channel_name
         await self.accept()
+        await self.find_match()
 
-    async def disconnect(self, code):
-        await self.channel_layer.group_discard(self.room, self.channel_name)
+    async def disconnect(self, close_code):
+        waiting_users.discard(self.user_id)
 
-    async def receive(self, text_data):
-        await self.channel_layer.group_send(
-            self.room,
-            {
-                "type": "signal_message",
-                "message": text_data,
-            }
-        )
+    async def find_match(self):
+        if waiting_users:
+            partner_id = waiting_users.pop()
+            room_name = f"room_{self.user_id}_{partner_id}"
 
-    async def signal_message(self, event):
-        await self.send(text_data=event["message"])
+            # Notify both users
+            await self.channel_layer.send(partner_id, {
+                'type': 'start.chat',
+                'room_name': room_name,
+            })
+            await self.send(json.dumps({'type': 'start.chat', 'room_name': room_name}))
+        else:
+            waiting_users.add(self.user_id)
+
+    async def start_chat(self, event):
+        await self.send(json.dumps({'type': 'start.chat', 'room_name': event['room_name']}))
