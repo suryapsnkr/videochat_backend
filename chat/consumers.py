@@ -1,39 +1,35 @@
-# consumers.py
-import json
 from channels.generic.websocket import AsyncWebsocketConsumer
+import json
+from asyncio import Queue
 
-waiting_user = None
+waiting_users = Queue()
 
 class VideoChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
+        self.partner = None
+        await self.send(text_data=json.dumps({"type": "status", "message": "connecting..."}))
 
-        global waiting_user
-        if waiting_user is None:
-            # First user waits
-            waiting_user = self
-            self.partner = None
+        if waiting_users.empty():
+            await waiting_users.put(self)
         else:
-            # Second user connects and they are matched
-            self.partner = waiting_user
-            self.partner.partner = self
-            waiting_user = None
-
-            # Notify both with who is offerer
-            await self.send(text_data=json.dumps({'type': 'matched', 'offerer': True}))
-            await self.partner.send(text_data=json.dumps({'type': 'matched', 'offerer': False}))
+            partner = await waiting_users.get()
+            self.partner = partner
+            partner.partner = self
+            await self.send(json.dumps({"type": "matched"}))
+            await partner.send(json.dumps({"type": "matched"}))
 
     async def disconnect(self, close_code):
-        if hasattr(self, 'partner') and self.partner:
+        if self.partner:
+            await self.partner.send(json.dumps({"type": "partner_disconnected"}))
+            self.partner.partner = None
+        else:
             try:
-                await self.partner.send(text_data=json.dumps({'type': 'partner_disconnected'}))
-                self.partner.partner = None
-            except:
+                waiting_users._queue.remove(self)
+            except ValueError:
                 pass
-        global waiting_user
-        if waiting_user == self:
-            waiting_user = None
 
     async def receive(self, text_data):
-        if hasattr(self, 'partner') and self.partner:
-            await self.partner.send(text_data=text_data)
+        data = json.loads(text_data)
+        if self.partner:
+            await self.partner.send(text_data)
