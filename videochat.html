@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Anonymous Video Chat</title>
+</head>
+<body>
+  <h2 id="status">Click Connect to start</h2>
+  <video id="localVideo" autoplay muted playsinline width="300"></video>
+  <video id="remoteVideo" autoplay playsinline width="300"></video>
+  <br>
+  <button id="connectBtn" onclick="connect()">Connect</button>
+  <button id="disconnectBtn" onclick="disconnect()" style="display: none;">Disconnect</button>
+
+  <script>
+    const statusText = document.getElementById('status');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+
+    let socket;
+    let localStream;
+    let peerConnection;
+
+    const config = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' }
+      ]
+    };
+
+    async function connect() {
+      connectBtn.style.display = 'none';
+      statusText.innerText = "Connecting...";
+
+      socket = new WebSocket("ws://148.135.136.52:3000/ws/video/");  // replace with your actual WebSocket URL
+
+      socket.onopen = () => {
+        console.log("WebSocket connected");
+      };
+
+      socket.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "matched") {
+          statusText.innerText = "Matched! Starting video...";
+          await startWebRTC();
+          statusText.innerText = "Connected!";
+          disconnectBtn.style.display = 'inline-block';
+        } else if (data.type === "partner_disconnected") {
+          statusText.innerText = "Partner disconnected. Please refresh.";
+          disconnectBtn.style.display = 'none';
+        } else {
+          await handleSignal(data);
+        }
+      };
+
+      socket.onclose = () => {
+        console.log("WebSocket closed");
+      };
+    }
+
+    async function startWebRTC() {
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localVideo.srcObject = localStream;
+
+      peerConnection = new RTCPeerConnection(config);
+
+      localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      peerConnection.ontrack = event => {
+        remoteVideo.srcObject = event.streams[0];
+      };
+
+      peerConnection.onicecandidate = event => {
+        if (event.candidate) {
+          socket.send(JSON.stringify({ type: "candidate", candidate: event.candidate }));
+        }
+      };
+
+      try {
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        socket.send(JSON.stringify(offer));
+      } catch (err) {
+        console.warn("Offer creation skipped:", err);
+      }
+    }
+
+    async function handleSignal(data) {
+      if (data.type === "offer") {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.send(JSON.stringify(answer));
+      } else if (data.type === "answer") {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+      } else if (data.type === "candidate") {
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } catch (e) {
+          console.error("Error adding ICE candidate:", e);
+        }
+      }
+    }
+
+    function disconnect() {
+      if (peerConnection) {
+        peerConnection.close();
+        peerConnection = null;
+      }
+
+      if (socket) {
+        socket.close();
+        socket = null;
+      }
+
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+        localVideo.srcObject = null;
+        remoteVideo.srcObject = null;
+      }
+
+      connectBtn.style.display = 'inline-block';
+      disconnectBtn.style.display = 'none';
+      statusText.innerText = "Disconnected. Click Connect to start again.";
+    }
+  </script>
+</body>
+</html>

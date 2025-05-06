@@ -1,35 +1,39 @@
-from channels.generic.websocket import AsyncWebsocketConsumer
+# consumers.py
 import json
-from asyncio import Queue
+from channels.generic.websocket import AsyncWebsocketConsumer
 
-waiting_users = Queue()
+waiting_user = None
 
 class VideoChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
-        self.partner = None
-        await self.send(text_data=json.dumps({"type": "status", "message": "connecting..."}))
 
-        if waiting_users.empty():
-            await waiting_users.put(self)
+        global waiting_user
+        if waiting_user is None:
+            # First user waits
+            waiting_user = self
+            self.partner = None
         else:
-            partner = await waiting_users.get()
-            self.partner = partner
-            partner.partner = self
-            await self.send(json.dumps({"type": "matched"}))
-            await partner.send(json.dumps({"type": "matched"}))
+            # Second user connects and they are matched
+            self.partner = waiting_user
+            self.partner.partner = self
+            waiting_user = None
+
+            # Notify both with who is offerer
+            await self.send(text_data=json.dumps({'type': 'matched', 'offerer': True}))
+            await self.partner.send(text_data=json.dumps({'type': 'matched', 'offerer': False}))
 
     async def disconnect(self, close_code):
-        if self.partner:
-            await self.partner.send(json.dumps({"type": "partner_disconnected"}))
-            self.partner.partner = None
-        else:
+        if hasattr(self, 'partner') and self.partner:
             try:
-                waiting_users._queue.remove(self)
-            except ValueError:
+                await self.partner.send(text_data=json.dumps({'type': 'partner_disconnected'}))
+                self.partner.partner = None
+            except:
                 pass
+        global waiting_user
+        if waiting_user == self:
+            waiting_user = None
 
     async def receive(self, text_data):
-        data = json.loads(text_data)
-        if self.partner:
-            await self.partner.send(text_data)
+        if hasattr(self, 'partner') and self.partner:
+            await self.partner.send(text_data=text_data)
